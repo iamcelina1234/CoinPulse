@@ -9,7 +9,7 @@ import {
   PERIOD_CONFIG,
 } from '@/constants';
 import { CandlestickSeries, createChart, IChartApi, ISeriesApi } from 'lightweight-charts';
-import { fetcher } from '@/lib/coingecko.actions';
+// Use the server API proxy for OHLC data: /api/coins/[id]/ohlc
 import { convertOHLCData } from '@/lib/utils';
 
 const CandlestickChart = ({
@@ -20,7 +20,8 @@ const CandlestickChart = ({
   initialPeriod = 'daily',
   liveOhlcv = null,
   mode = 'historical',
-  
+  liveInterval,
+  setLiveInterval,
 }: CandlestickChartProps) => {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -34,13 +35,20 @@ const CandlestickChart = ({
   const fetchOHLCData = async (selectedPeriod: Period) => {
     try {
       const { days, interval } = PERIOD_CONFIG[selectedPeriod];
-
-      const newData = await fetcher<OHLCData[]>(`/coins/${coinId}/ohlc`, {
+      const params = new URLSearchParams({
         vs_currency: 'usd',
-        days,
-        interval,
+        days: String(days),
         precision: 'full',
       });
+      if (interval) params.append('interval', interval);
+
+      const res = await fetch(`/api/coins/${encodeURIComponent(coinId)}/ohlc?${params.toString()}`);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Server error: ${res.status} ${text}`);
+      }
+
+      const newData: OHLCData[] = await res.json();
 
       startTransition(() => {
         setOhlcData(newData ?? []);
@@ -93,7 +101,6 @@ const CandlestickChart = ({
     };
   }, [height, period]);
 
-
   useEffect(() => {
     if (!candleSeriesRef.current) return;
 
@@ -101,12 +108,36 @@ const CandlestickChart = ({
       (item) => [Math.floor(item[0] / 1000), item[1], item[2], item[3], item[4]] as OHLCData,
     );
 
-    const converted = convertOHLCData(convertedToSeconds);
-    candleSeriesRef.current.setData(converted);
-     chartRef.current?.timeScale().fitContent();
-      }, [ohlcData, period]);
+    let merged: OHLCData[];
 
-      return (
+    if (liveOhlcv) {
+      const liveTimestamp = liveOhlcv[0];
+
+      const lastHistoricalCandle = convertedToSeconds[convertedToSeconds.length - 1];
+
+      if (lastHistoricalCandle && lastHistoricalCandle[0] === liveTimestamp) {
+        merged = [...convertedToSeconds.slice(0, -1), liveOhlcv];
+      } else {
+        merged = [...convertedToSeconds, liveOhlcv];
+      }
+    } else {
+      merged = convertedToSeconds;
+    }
+
+    merged.sort((a, b) => a[0] - b[0]);
+
+    const converted = convertOHLCData(merged);
+    candleSeriesRef.current.setData(converted);
+
+    const dataChanged = prevOhlcDataLength.current !== ohlcData.length;
+
+    if (dataChanged || mode === 'historical') {
+      chartRef.current?.timeScale().fitContent();
+      prevOhlcDataLength.current = ohlcData.length;
+    }
+  }, [ohlcData, period, liveOhlcv, mode]);
+
+  return (
     <div id="candlestick-chart">
       <div className="chart-header">
         <div className="flex-1">{children}</div>
@@ -115,6 +146,7 @@ const CandlestickChart = ({
           <span className="text-sm mx-2 font-medium text-purple-100/50">Period:</span>
           {PERIOD_BUTTONS.map(({ value, label }) => (
             <button
+              type="button"
               key={value}
               className={period === value ? 'config-button-active' : 'config-button'}
               onClick={() => handlePeriodChange(value)}
@@ -124,8 +156,26 @@ const CandlestickChart = ({
             </button>
           ))}
         </div>
-        </div>
-          <div ref={chartContainerRef} className="chart" style={{ height }} />
+
+        {liveInterval && (
+          <div className="button-group">
+            <span className="text-sm mx-2 font-medium text-purple-100/50">Update Frequency:</span>
+            {LIVE_INTERVAL_BUTTONS.map(({ value, label }) => (
+              <button
+                type="button"
+                key={value}
+                className={liveInterval === value ? 'config-button-active' : 'config-button'}
+                onClick={() => setLiveInterval && setLiveInterval(value)}
+                disabled={isPending}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div ref={chartContainerRef} className="chart" style={{ height }} />
     </div>
   );
 };
