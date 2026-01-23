@@ -31,9 +31,77 @@ export async function fetcher<T>(
 
   if (!response.ok) {
     const errorBody: CoinGeckoErrorBody = await response.json().catch(() => ({}));
-
-    throw new Error(`API Error: ${response.status}: ${errorBody.error || response.statusText} `);
+    const errorMessage = `API Error: ${response.status}: ${errorBody.error || response.statusText}`;
+    console.warn(errorMessage, { endpoint, status: response.status });
+    throw new Error(errorMessage);
   }
 
   return response.json();
+}
+
+
+// 🔍 SEARCH COINS (FOR SEARCH MODAL)
+export async function searchCoins(query: string): Promise<SearchCoin[]> {
+  if (!query) return [];
+
+  const data = await fetcher<{
+    coins: {
+      id: string;
+      name: string;
+      symbol: string;
+      thumb: string;
+      data?: {
+        price?: number;
+        price_change_percentage_24h?: number;
+      };
+    }[];
+  }>('search', { query }, 30);
+
+  return data.coins.map((c) => ({
+    id: c.id,
+    name: c.name,
+    symbol: c.symbol,
+    thumb: c.thumb,
+    market_cap_rank: null,
+    large: c.thumb,
+    data: {
+      price: c.data?.price,
+      price_change_percentage_24h: c.data?.price_change_percentage_24h ?? 0,
+    },
+  }));
+} 
+
+
+export async function getPools(
+  id: string,
+  network?: string | null,
+  contractAddress?: string | null,
+): Promise<PoolData> {
+  const fallback: PoolData = {
+    id: '',
+    address: '',
+    name: '',
+    network: '',
+  };
+
+  if (network && contractAddress) {
+    try {
+      const poolData = await fetcher<{ data: PoolData[] }>(
+        `/onchain/networks/${network}/tokens/${contractAddress}/pools`,
+      );
+
+      return poolData.data?.[0] ?? fallback;
+    } catch (error) {
+      console.warn(`Failed to fetch pools for network ${network}:`, error);
+      // Continue to fallback method
+    }
+  }
+
+  try {
+    const poolData = await fetcher<{ data: PoolData[] }>('/onchain/search/pools', { query: id });
+    return poolData.data?.[0] ?? fallback;
+  } catch (error) {
+    console.warn(`Failed to fetch pools for coin ${id}:`, error);
+    return fallback;
+  }
 }
